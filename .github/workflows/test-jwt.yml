@@ -1,0 +1,44 @@
+name: Test JWT Authenticator
+
+on:
+  workflow_dispatch:
+    inputs:
+      audience:
+        description: "audience (aud)"
+        type: string
+        required: true
+        default: "my-api"
+      fqdn:
+        description: "cluster fqdn"
+        type: string
+        required: true
+        default: ""
+
+jobs:
+  list-nodes:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Make requests
+        id: make-request
+        env:
+          AUD: ${{ inputs.audience }}
+          FQDN: ${{ inputs.fqdn }}
+        run: |
+          TOKEN=$(curl -s \
+            -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=${AUD}" | jq -r '.value')
+          echo "OIDC Token: $TOKEN" > token.txt
+
+          echo "Making API Server call"
+          curl -ks \
+            -H "Authorization: Bearer $TOKEN" \
+            "https://${FQDN}/api/v1/nodes"
+
+      - name: Upload token
+        uses: actions/upload-artifact@v4
+        with:
+          name: oidc-token
+          path: token.txt
