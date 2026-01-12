@@ -1,44 +1,57 @@
-name: Test JWT Authenticator
-
+name: AKS Access with GitHub OIDC
 on:
   workflow_dispatch:
-    inputs:
-      audience:
-        description: "audience (aud)"
-        type: string
-        required: true
-        default: "my-api"
-      fqdn:
-        description: "cluster fqdn"
-        type: string
-        required: true
-        default: ""
+  push:
+    branches: [main]
+
+permissions:
+  id-token: write
+  contents: read
 
 jobs:
-  list-nodes:
+  aks-access:
     runs-on: ubuntu-latest
-    permissions:
-      id-token: write
-      contents: read
     steps:
-      - name: Make requests
-        id: make-request
-        env:
-          AUD: ${{ inputs.audience }}
-          FQDN: ${{ inputs.fqdn }}
-        run: |
-          TOKEN=$(curl -s \
-            -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=${AUD}" | jq -r '.value')
-          echo "OIDC Token: $TOKEN" > token.txt
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-          echo "Making API Server call"
-          curl -ks \
-            -H "Authorization: Bearer $TOKEN" \
-            "https://${FQDN}/api/v1/nodes"
-
-      - name: Upload token
-        uses: actions/upload-artifact@v4
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v3
         with:
-          name: oidc-token
-          path: token.txt
+          version: 'latest'
+
+      - name: Get GitHub OIDC token
+        id: get_token
+        run: |
+          TOKEN=$(curl -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=gh-workflow" | \
+            jq -r '.value')
+          echo "::add-mask::$TOKEN"
+          echo "oidc_token=$TOKEN" >> $GITHUB_OUTPUT
+
+      - name: Create kubeconfig with OIDC token
+        run: |
+          cat <<EOF > kubeconfig
+          apiVersion: v1
+          kind: Config
+          clusters:
+          - cluster:
+              certificate-authority-data: ${{ secrets.AKS_CA_DATA }}
+              server: ${{ secrets.AKS_SERVER_URL }}
+            name: aks-cluster
+          contexts:
+          - context:
+              cluster: aks-cluster
+              user: github-oidc-user
+            name: aks-context
+          current-context: aks-context
+          users:
+          - name: github-oidc-user
+            user:
+              token: ${{ steps.get_token.outputs.oidc_token }}
+          EOF
+
+      - name: List all pods in the cluster
+        run: |
+          export KUBECONFIG=./kubeconfig
+          kubectl get pods --all-namespaces
